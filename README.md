@@ -109,3 +109,22 @@ Pushed to **Docker Hub** as `initialed85/chroma-rush:latest`. Not ghcr: the ghcr
 this fleet are private and home-dev has no pull secret. Deployed as an Application in
 `home-ops/clusters/dev/applications/chroma-rush` (owned by the home-ops fleet repo, mirroring
 the `asteroids` game app), host **chroma-rush.dev.initialed85.cc**.
+
+### Release contract (a `:latest` push is not a deploy)
+
+The manifest pins the **immutable digest** (`imagePullPolicy: IfNotPresent`), so pushing a new
+`:latest` changes nothing in the cluster. The deploy is the digest bump in
+`clusters/dev/applications/chroma-rush/deployment.yaml`. Procedure, agreed with the app owner:
+
+1. `docker build -t chroma-rush:latest . && docker push ...` (locally: `docker run --rm -p 127.0.0.1:8099:8080 …`)
+2. Send the owner: **new digest**, commit sha, change summary.
+3. They bump the digest; Argo rolls the pod. Rollback = revert the commit.
+
+`deployment.yaml` uses `strategy: Recreate`, which deletes the old pod before the new one is ready:
+measured on the 2026-10-31 rollout, a **~30 s 503 window**. Acceptable for a static game, so
+**cut releases when nobody is playing** — zero-downtime would need `RollingUpdate` with
+`maxUnavailable: 0, maxSurge: 1`, which is the owner's call, not mine.
+
+Hardening already in the manifest, for reference when changing the image: `runAsNonRoot: true`,
+`allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`. `runAsNonRoot` is what makes
+kubelet refuse an image that quietly came back as root — keep it if the base image changes.
