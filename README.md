@@ -47,6 +47,7 @@ tools/stub.mjs  headless DOM+canvas stub
 tools/smoke.mjs soak test: 12k frames, boss waves, death, restart, touch, pause, mute
 tools/probe.mjs difficulty probe (AFK vs bot)
 tools/play.mjs  played-time sim: bot drives real inputs, prints a play-by-play
+tools/audio.mjs audio-graph test; tools/mockaudio.mjs is a mock WebAudio implementation
 ```
 
 ## Engine notes (the "juice")
@@ -56,7 +57,9 @@ tools/play.mjs  played-time sim: bot drives real inputs, prints a play-by-play
 - **Motion trails** come from painting the background at 30% alpha each frame instead of clearing it.
 - **Impact feel**: per-kill hit-stop (up to 160 ms on bosses), screen shake, additive screen flash,
   and a hue shift. Boss death runs a 0.32× slow-motion chain of 11 secondary explosions.
-- **Audio is a sequencer**: 16-step kick/hat/bass pad whose tempo tracks your combo
+- **Audio is a sequencer**: 16-step kick/hat/bass whose tempo tracks your combo, over a
+  triangle-wave pad bed. The whole mix runs through a 92 Hz highpass and a soft compressor,
+  because laptop speakers cannot reproduce a 55 Hz drone and everything below 90 Hz is distortion.
   (104 → 168 BPM), stereo-panned by on-screen x position.
 - **Fairness**: enemy spawns are telegraphed with a collapsing ring for 0.55 s, and spawn points are
   chosen ≥ 240 px from you.
@@ -75,11 +78,17 @@ node tools/play.mjs 180   # three minutes, enough to reach and kill the wave-5 b
 
 ### Numbers from simulated play
 
-One minute: ~45-51 kills, wave 3-4, chain peaks x2.7-x4.7, ~9-12 enemies on screen at once.
-Three minutes: wave 7, boss down at 2:23, chain peak x9.58 (40 kills), 1,329 particles, PRISM weapon.
-AFK player dies in ~12 s — the arena does not tolerate idling.
+One minute (8-run mean): 149 kills, wave 3.4, 7.9 enemies on screen on average, 60% of the minute
+with 6+ alive, chain x6.06 (the cap), 14 shockwaves, 3.6 hits taken, 522 particles on average.
+Chain of 5 kills lands at 4.6 s — the multiplier is live inside wave 1.
+Three minutes: wave 7, boss down, chain capped, PRISM weapon. AFK player dies in ~12 s.
 
 These runs found the pacing flaw that shaped the spawn economy: the first tuning pass produced
 only 5 concurrent enemies and chains under x2.4, which is a boring minute, so waves are now
-`6 + 3.4·wave` enemies spawning every ~0.8 s, with a hard density ceiling of 18 live units so the
-arena stays readable and the particle budget holds.
+waves are now `8 + 4·wave` enemies spawning every ~0.75 s under a 26-unit ceiling, and two of the
+spawn archetypes are *packs*: a swarm telegraph erupts into 5-9 minis, a trio telegraph into 3
+shooters. Packs buy screen pressure cheaply, because a single shockwave clears them.
+
+The player's cannon was then raised ~2.6× (PULSE 125 ms → 50 ms, PRISM 90 ms → 34 ms, plus a
+260-bullet cap) so dense waves are survivable; shot blips, recoil and screen shake were all reduced
+per shot so a 20-shot-per-second cannon reads as a stream of light, not a buzz.

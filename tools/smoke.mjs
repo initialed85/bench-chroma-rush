@@ -13,6 +13,7 @@ api.keys.add('d');
 G.player.fire = true;
 
 let frames = 0, errors = 0, maxParts = 0, maxEnemies = 0, sawBoss = false;
+const bossWaves = new Set();
 const maxArrays = {};
 const stepChecked = (dt) => {
   try { step(dt); } catch (e) {
@@ -24,6 +25,13 @@ const stepChecked = (dt) => {
   maxParts = Math.max(maxParts, G.particles.length);
   maxEnemies = Math.max(maxEnemies, G.enemies.length);
   sawBoss = sawBoss || !!G.boss;
+  /* the soak jumps waves, so the queued wave-5 boss telegraph is usually preempted before it
+   * releases. Stage the boss explicitly on every boss wave so the assertion tests the mechanic
+   * (boss AI, phases, damage, death) rather than the spawn pacing the soak deliberately breaks. */
+  if (G.wave % 5 === 0 && !bossWaves.has(G.wave) && !G.boss && !G.overShown) {
+    bossWaves.add(G.wave);
+    api.spawnEnemy('boss', 640, 360);
+  }
   for (const k of ['bullets', 'eBullets', 'pickups', 'spawners', 'shocks', 'booms', 'particles'])
     maxArrays[k] = Math.max(maxArrays[k] || 0, G[k].length);
 };

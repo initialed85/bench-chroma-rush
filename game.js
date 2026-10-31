@@ -14,7 +14,8 @@ const randi = (a, b) => Math.floor(rand(a, b));
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 const angLerp = (a, b, t) => { const d = ((b - a + Math.PI) % TAU + TAU) % TAU - Math.PI; return a + d * t; };
 const hsl = (h, s, l, a = 1) => `hsla(${Math.round(((h % 360) + 360) % 360)},${s}%,${l}%,${a})`;
-const COMBO_T = 2.6;
+const COMBO_T = 2.3;
+const MAX_BULLETS = 260;   /* ceiling for the player's own bullet population */
 
 /* ================= surface ================= */
 const canvas = document.getElementById('game');
@@ -96,7 +97,22 @@ function initAudio() {
   AC = new Ctor();
   master = AC.createGain();
   master.gain.value = 0.75;
-  master.connect(AC.destination);
+  /* master bus: highpass the sub-rumble out (laptop speakers have no response below ~90 Hz,
+   * so the drone's 55 Hz fundamental was pure distortion), then a gentle limiter so a dense
+   * wave + a full pad + shockwave can't all stack into a wall of noise. */
+  music.hp = AC.createBiquadFilter();
+  music.hp.type = 'highpass';
+  music.hp.frequency.value = 92;
+  music.hp.Q.value = 0.7;
+  music.comp = AC.createDynamicsCompressor();
+  music.comp.threshold.value = -18;
+  music.comp.knee.value = 10;
+  music.comp.ratio.value = 3.5;
+  music.comp.attack.value = 0.006;
+  music.comp.release.value = 0.22;
+  master.connect(music.hp);
+  music.hp.connect(music.comp);
+  music.comp.connect(AC.destination);
   const len = Math.floor(AC.sampleRate * 1.2);
   noiseBuf = AC.createBuffer(1, len, AC.sampleRate);
   const d = noiseBuf.getChannelData(0);
@@ -147,8 +163,10 @@ function noise(o) {
 const semi = (n) => 440 * Math.pow(2, n / 12);
 const sfx = {
   shoot(w, pan) {
-    tone({ f: 1000 - w * 110, f2: 140, type: 'square', dur: 0.07, gain: 0.055, pan });
-    noise({ dur: 0.05, gain: 0.05, lp: 4200, lp2: 900, pan });
+    /* ~20 shots/s at the top tier: fire the blip on alternate shots and keep it quiet,
+     * otherwise the shots fuse into a continuous buzz */
+    tone({ f: 1000 - w * 110, f2: 140, type: 'square', dur: 0.05, gain: 0.038, pan });
+    noise({ dur: 0.035, gain: 0.03, lp: 4200, lp2: 900, pan });
   },
   hit(pan) { tone({ f: 1700, f2: 800, type: 'triangle', dur: 0.045, gain: 0.05, pan }); },
   explode(r, pan, big) {
@@ -194,26 +212,44 @@ const sfx = {
 const music = { step: 0, next: 0, on: true, pad: null, padGain: null, padFilter: null };
 function startPad() {
   if (!AC || music.pad) return;
-  const o1 = AC.createOscillator(), o2 = AC.createOscillator();
+  const o1 = AC.createOscillator(), o2 = AC.createOscillator(), o3 = AC.createOscillator();
   const g = AC.createGain(), f = AC.createBiquadFilter();
-  o1.type = 'sawtooth'; o2.type = 'sawtooth';
-  o1.frequency.value = 55; o2.frequency.value = 55.4;
-  f.type = 'lowpass'; f.frequency.value = 380; f.Q.value = 6;
+  /* triangles, not sawtooths: a sawtooth's harmonics are what made this read as a harsh buzz */
+  o1.type = 'triangle'; o2.type = 'triangle'; o3.type = 'sine';
+  o1.frequency.value = 110; o2.frequency.value = 110 * 1.005; o3.frequency.value = 165;
+  o1.detune.value = -4; o2.detune.value = 6; o3.detune.value = 3;
+  f.type = 'lowpass'; f.frequency.value = 300; f.Q.value = 0.8;
   g.gain.value = 0.0001;
-  o1.connect(f); o2.connect(f); f.connect(g); g.connect(master);
-  o1.start(); o2.start();
-  music.pad = [o1, o2];
+  const o3g = AC.createGain(); o3g.gain.value = 0.35;
+  o1.connect(f); o2.connect(f); o3.connect(o3g); o3g.connect(f);
+  f.connect(g); g.connect(master);
+  /* slow tremolo + filter wobble so the bed breathes instead of droning on one note */
+  const lfo = AC.createOscillator(), lg = AC.createGain();
+  lfo.type = 'sine'; lfo.frequency.value = 0.13; lg.gain.value = 0.009;
+  lfo.connect(lg); lg.connect(g.gain); lfo.start();
+  const flfo = AC.createOscillator(), flg = AC.createGain();
+  flfo.type = 'sine'; flfo.frequency.value = 0.07; flg.gain.value = 90;
+  flfo.connect(flg); flg.connect(f.frequency); flfo.start();
+  o1.start(); o2.start(); o3.start();
+  music.pad = [o1, o2, o3];
   music.padGain = g;
   music.padFilter = f;
+  music.padLfo = [lfo, flfo];
+  setPadWave(1);
 }
+/* The pad no longer ramps brighter every wave (that was the jarring part). It cycles a
+ * fixed Am → F → G → Am progression and the only thing that lifts is a small, capped
+ * brightness step for the last few waves, driven by wave number and capped hard. */
+const PAD_ROOTS = [110, 87.31, 98, 110, 87.31, 110];
 function setPadWave(n) {
   if (!music.padGain || !AC) return;
-  const notes = [55, 55, 61.7, 69.3, 73.4, 82.4, 92.5];
-  const f = notes[n % notes.length];
-  music.pad[0].frequency.setTargetAtTime(f, AC.currentTime, 0.5);
-  music.pad[1].frequency.setTargetAtTime(f * 1.5, AC.currentTime, 0.5);
-  music.padGain.gain.setTargetAtTime(0.055, AC.currentTime, 1.4);
-  music.padFilter.frequency.setTargetAtTime(340 + n * 26, AC.currentTime, 1.4);
+  const f = PAD_ROOTS[(n - 1) % PAD_ROOTS.length];
+  const t = AC.currentTime;
+  music.pad[0].frequency.setTargetAtTime(f, t, 1.6);
+  music.pad[1].frequency.setTargetAtTime(f * 1.005, t, 1.6);
+  music.pad[2].frequency.setTargetAtTime(f * 1.5, t, 1.6);
+  music.padGain.gain.setTargetAtTime(Math.min(0.03, 0.018 + Math.min(n, 8) * 0.0014), t, 2.4);
+  music.padFilter.frequency.setTargetAtTime(Math.min(420, 280 + Math.min(n, 8) * 17), t, 2.8);
 }
 function scheduleMusic() {
   if (!AC || !music.on) return;
@@ -257,11 +293,11 @@ const G = {
   player: null
 };
 const WEAPONS = [
-  { cd: 0.125, n: 1, spread: 0, jit: 0.015, spd: 1250, dmg: 1.00, size: 3.6, hue: 190, name: 'PULSE' },
-  { cd: 0.116, n: 2, spread: 0.15, jit: 0.02, spd: 1230, dmg: 1.00, size: 3.4, hue: 150, name: 'TWIN' },
-  { cd: 0.106, n: 3, spread: 0.28, jit: 0.022, spd: 1200, dmg: 1.05, size: 3.4, hue: 105, name: 'TRIAD' },
-  { cd: 0.098, n: 4, spread: 0.46, jit: 0.026, spd: 1180, dmg: 1.15, size: 3.8, hue: 50, name: 'FAN' },
-  { cd: 0.090, n: 5, spread: 0.66, jit: 0.032, spd: 1150, dmg: 1.30, size: 4.4, hue: 320, name: 'PRISM', pierce: 1 }
+  { cd: 0.050, n: 1, spread: 0, jit: 0.015, spd: 1250, dmg: 1.00, size: 3.6, hue: 190, name: 'PULSE' },
+  { cd: 0.046, n: 2, spread: 0.15, jit: 0.02, spd: 1230, dmg: 1.00, size: 3.4, hue: 150, name: 'TWIN' },
+  { cd: 0.042, n: 3, spread: 0.28, jit: 0.022, spd: 1200, dmg: 1.05, size: 3.4, hue: 105, name: 'TRIAD' },
+  { cd: 0.038, n: 4, spread: 0.46, jit: 0.026, spd: 1180, dmg: 1.15, size: 3.8, hue: 50, name: 'FAN' },
+  { cd: 0.034, n: 5, spread: 0.66, jit: 0.032, spd: 1150, dmg: 1.30, size: 4.4, hue: 320, name: 'PRISM', pierce: 1 }
 ];
 const TYPES = {
   chaser: { hp: 3, r: 15, spd: 155, dmg: 13, hue: 348, score: 100, sides: 7 },
@@ -269,7 +305,11 @@ const TYPES = {
   shooter: { hp: 6, r: 18, spd: 100, dmg: 9, hue: 55, score: 180, sides: 6, gun: 1.8 },
   splitter: { hp: 11, r: 27, spd: 106, dmg: 12, hue: 165, score: 250, sides: 5 },
   tank: { hp: 32, r: 36, spd: 55, dmg: 20, hue: 292, score: 540, sides: 8 },
-  boss: { hp: 190, r: 58, spd: 46, dmg: 26, hue: 120, score: 2600, sides: 12 }
+  boss: { hp: 190, r: 58, spd: 46, dmg: 26, hue: 120, score: 2600, sides: 12 },
+  /* pack archetypes: one telegraph ring, many enemies. They exist for visual pressure,
+   * and they die together to one shockwave, so chaos is cheap to pay off. */
+  swarm: { hp: 3, r: 12, spd: 240, dmg: 8, hue: 20, score: 90, sides: 3 },
+  trio: { hp: 6, r: 18, spd: 100, dmg: 9, hue: 55, score: 180, sides: 6, gun: 1.8 }
 };
 
 function newPlayer() {
@@ -295,12 +335,12 @@ function resetGame() {
 
 /* ================= waves ================= */
 function chooseType(n) {
-  const bag = ['chaser', 'chaser', 'chaser'];
-  if (n >= 2) bag.push('shooter', 'chaser');
-  if (n >= 3) bag.push('splitter', 'shooter');
-  if (n >= 4) bag.push('tank', 'splitter');
-  if (n >= 6) bag.push('tank', 'shooter', 'mini');
-  if (n >= 8) bag.push('mini', 'tank');
+  const bag = ['chaser', 'chaser', 'swarm'];
+  if (n >= 2) bag.push('shooter', 'chaser', 'swarm');
+  if (n >= 3) bag.push('splitter', 'shooter', 'swarm', 'trio');
+  if (n >= 4) bag.push('tank', 'splitter', 'swarm');
+  if (n >= 6) bag.push('tank', 'shooter', 'swarm', 'trio');
+  if (n >= 8) bag.push('mini', 'tank', 'swarm', 'trio');
   return pick(bag);
 }
 function startWave(n) {
@@ -308,14 +348,14 @@ function startWave(n) {
   G.waveBanner = 2.1;
   G.waveLabel = n % 5 === 0 ? 'BOSS' : 'WAVE ' + n;
   G.hueT = (n * 41 + 200) % 360;
-  G.clearT = 1.4;
-  const budget = 6 + Math.floor(n * 3.4);
+  G.clearT = 1.2;
+  const budget = 8 + Math.floor(n * 4);
   G.queue.length = 0;
   for (let i = 0; i < budget; i++) G.queue.push(chooseType(n));
   if (n % 5 === 0) G.queue.push('boss');
-  G.spawnInterval = Math.max(0.16, 0.85 - n * 0.045);
-  G.spawnT = 0.45;
-  G.player.charge = Math.min(100, G.player.charge + 12);
+  G.spawnInterval = Math.max(0.14, 0.75 - n * 0.04);
+  G.spawnT = 0.35;
+  G.player.charge = Math.min(100, G.player.charge + 8);
   sfx.wave(n);
   setPadWave(n);
   flashRing(W / 2, H / 2, Math.max(W, H) * 0.8, G.hueT, 0.9);
@@ -325,16 +365,16 @@ function waves(dt) {
   if (G.queue.length) {
     G.spawnT -= dt;
     /* density ceiling keeps the arena readable and the particle budget honest */
-    if (G.spawnT <= 0 && G.spawners.length < 7 && G.enemies.length + G.spawners.length < 18) {
+    if (G.spawnT <= 0 && G.spawners.length < 7 && G.enemies.length + G.spawners.length < 26) {
       addSpawner(G.queue.shift());
       G.spawnT = G.spawnInterval * rand(0.7, 1.35);
     }
-    G.clearT = 1.4;
+    G.clearT = 1.2;
   } else if (!G.enemies.length && !G.spawners.length) {
     G.clearT -= dt;
     if (G.clearT <= 0) startWave(G.wave + 1);
   } else {
-    G.clearT = 1.4;
+    G.clearT = 1.2;
   }
 }
 function edgePoint() {
@@ -411,12 +451,16 @@ function fire() {
     const spd = w.spd * rand(0.94, 1.06);
     const bx = p.x + Math.cos(a) * (p.r + 6), by = p.y + Math.sin(a) * (p.r + 6);
     G.bullets.push({ x: bx, y: by, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, dmg: w.dmg, size: w.size, hue: w.hue + rand(-14, 14), life: 1.6, pierce: w.pierce || 0 });
-    burst(bx, by, 2, { hue: w.hue, spd: 130, life: 0.22, size: 3, kind: 'spark', ang: a, spread: 0.5 });
+    burst(bx, by, w.n > 1 ? 1 : 2, { hue: w.hue, spd: 130, life: 0.22, size: 3, kind: 'spark', ang: a, spread: 0.5 });
   }
-  p.vx -= Math.cos(p.angle) * 42;
-  p.vy -= Math.sin(p.angle) * 42;
-  addShake(1.6);
-  sfx.shoot(p.weapon, pan(p.x));
+  /* a 20 shots/s cannon has to bound its own population, or the bullet list grows without limit */
+  if (G.bullets.length > MAX_BULLETS) G.bullets.splice(0, G.bullets.length - MAX_BULLETS);
+  p.vx -= Math.cos(p.angle) * 24;
+  p.vy -= Math.sin(p.angle) * 24;
+  addShake(0.9);
+  /* alternating shots share one blip so the shot rate reads as a stream, not a stutter */
+  p.shotSeq = (p.shotSeq | 0) + 1;
+  if (p.weapon === 0 || (p.shotSeq & 1) === 0) sfx.shoot(p.weapon, pan(p.x));
 }
 function dash() {
   const p = G.player;
@@ -436,29 +480,30 @@ function shockwave() {
   const p = G.player;
   if (!p || G.dead || p.charge < 50) return;
   p.charge -= 50;
-  G.shocks.push({ x: p.x, y: p.y, r: 8, max: 470, t: 0, hue: 300 });
+  const R = 380;
+  G.shocks.push({ x: p.x, y: p.y, r: 8, max: R, t: 0, hue: 300 });
   addShake(28);
   G.flash = Math.max(G.flash, 0.55);
   G.freeze = Math.max(G.freeze, 0.05);
   sfx.shock(pan(p.x));
   for (let i = G.eBullets.length - 1; i >= 0; i--) {
     const b = G.eBullets[i];
-    if (Math.hypot(b.x - p.x, b.y - p.y) < 470) {
+    if (Math.hypot(b.x - p.x, b.y - p.y) < R) {
       burst(b.x, b.y, 7, { hue: 180, spd: 240, life: 0.45, size: 3, kind: 'spark', spread: TAU });
       G.eBullets.splice(i, 1);
-      G.score += Math.round(15 * comboMult());
+      G.score += Math.round(8 * comboMult());
     }
   }
   for (let i = G.enemies.length - 1; i >= 0; i--) {
     const e = G.enemies[i];
     const d = Math.hypot(e.x - p.x, e.y - p.y);
-    if (d < 470) {
-      const f = 1 - d / 470;
+    if (d < R) {
+      const f = 1 - d / R;
       const a = Math.atan2(e.y - p.y, e.x - p.x);
       e.stun = Math.max(e.stun, 0.5 * f);
       e.vx += Math.cos(a) * (e.boss ? 90 : 620) * f;
       e.vy += Math.sin(a) * (e.boss ? 90 : 620) * f;
-      damageEnemy(e, (e.boss ? 24 : 15) * f + 4, a, p.x, p.y);
+      damageEnemy(e, (e.boss ? 20 : 12) * f * f + 2, a, p.x, p.y);
     }
   }
 }
@@ -466,12 +511,12 @@ function shockwave() {
 /* ================= enemies ================= */
 function spawnEnemy(type, x, y, vel) {
   const t = TYPES[type], wn = G.wave;
-  const hpS = 1 + wn * 0.16, spS = Math.min(1.7, 1 + wn * 0.03);
+  const hpS = 1 + wn * 0.18, spS = Math.min(1.9, 1 + wn * 0.038);
   const e = {
     type, x, y, vx: (vel && vel.x) || 0, vy: (vel && vel.y) || 0,
-    r: t.r, hp: t.hp * hpS, maxHp: t.hp * hpS, spd: t.spd * spS, dmg: t.dmg,
+    r: t.r, hp: t.hp * hpS, maxHp: t.hp * hpS, spd: t.spd * spS, dmg: t.dmg * (1 + wn * 0.045),
     hue: (G.hue + t.hue) % 360, score: t.score, sides: t.sides,
-    rot: rand(TAU), spin: rand(-1.7, 1.7), hit: 0, gun: t.gun || 0, gunT: rand(0.7, 2),
+    rot: rand(TAU), spin: rand(-1.7, 1.7), hit: 0, gun: t.gun ? t.gun * Math.max(0.6, 1 - wn * 0.02) : 0, gunT: rand(0.7, 2),
     stun: 0, boss: type === 'boss', ph: '', phT: 0, spiralA: rand(TAU), fireT: 0.2,
     orb: Math.random() < 0.5 ? -1 : 1, chargeA: 0
   };
@@ -612,7 +657,7 @@ function touchPlayer(e) {
 }
 
 /* ================= damage, kills, scoring ================= */
-const comboMult = () => 1 + Math.max(0, G.combo - 1) * 0.22;
+const COMBO_CAP = 24;const comboMult = () => 1 + Math.max(0, Math.min(G.combo, COMBO_CAP) - 1) * 0.22;
 const pan = (x) => clamp(x / W * 2 - 1, -1, 1);
 const addShake = (m) => { G.shake = Math.min(46, G.shake + m); };
 
@@ -634,7 +679,7 @@ function killEnemy(e, noDrop) {
   G.enemies.splice(idx, 1);
   if (e.boss && G.boss === e) G.boss = null;
   G.kills++;
-  G.combo = Math.min(40, G.combo + 1);
+  G.combo = Math.min(COMBO_CAP, G.combo + 1);
   if (G.combo > G.bestCombo) G.bestCombo = G.combo;
   G.comboT = COMBO_T;
   const pts = Math.round(e.score * comboMult());
@@ -642,7 +687,7 @@ function killEnemy(e, noDrop) {
   text(e.x, e.y - e.r, '+' + pts, e.hue);
   if (G.combo > 2) sfx.combo(G.combo);
   const p = G.player;
-  p.charge = Math.min(100, p.charge + 3 + e.r * 0.22);
+  p.charge = Math.min(100, p.charge + 1.2 + e.r * 0.1);
   explode(e.x, e.y, e.hue, e.r, e.boss ? 2.8 : 1);
   addShake(e.boss ? 40 : Math.min(19, 4 + e.r * 0.35));
   G.freeze = Math.max(G.freeze, e.boss ? 0.16 : Math.min(0.055, 0.014 + e.r * 0.0013));
@@ -801,10 +846,10 @@ function collect(k) {
   if (k.type === 'gem') {
     const pts = Math.round(60 * comboMult());
     G.score += pts;
-    p.charge = Math.min(100, p.charge + 9);
+    p.charge = Math.min(100, p.charge + 5);
     text(k.x, k.y, '+' + pts, 45);
   } else if (k.type === 'heal') {
-    p.hp = Math.min(p.maxHp, p.hp + 24);
+    p.hp = Math.min(p.maxHp, p.hp + 20);
     text(k.x, k.y, '+24 HP', 140);
   } else if (k.type === 'gun') {
     if (p.weapon < WEAPONS.length - 1) {
@@ -892,6 +937,29 @@ function updateBooms(dt) {
     }
   }
 }
+function releaseSpawner(s) {
+  if (s.type === 'swarm') {
+    const n = randi(5, 9);
+    for (let k = 0; k < n; k++) {
+      const a = k * TAU / n + rand(-0.3, 0.3);
+      const sp = rand(170, 330);
+      spawnEnemy('mini', s.x + Math.cos(a) * 14, s.y + Math.sin(a) * 14, { x: Math.cos(a) * sp, y: Math.sin(a) * sp });
+    }
+    ringFx(s.x, s.y, 190, s.hue, 0.85);
+    flashRing(s.x, s.y, 120, s.hue + 30, 0.7);
+    addShake(6);
+    tone({ f: 240, f2: 900, type: 'square', dur: 0.22, gain: 0.09, pan: pan(s.x) });
+  } else if (s.type === 'trio') {
+    for (let k = 0; k < 3; k++) {
+      const a = rand(TAU);
+      spawnEnemy('shooter', s.x + Math.cos(a) * 26, s.y + Math.sin(a) * 26, { x: Math.cos(a) * 140, y: Math.sin(a) * 140 });
+    }
+    ringFx(s.x, s.y, 150, s.hue, 0.75);
+    addShake(5);
+  } else {
+    spawnEnemy(s.type, s.x, s.y);
+  }
+}
 function updateSpawners(dt) {
   for (let i = G.spawners.length - 1; i >= 0; i--) {
     const s = G.spawners[i];
@@ -901,7 +969,7 @@ function updateSpawners(dt) {
       G.particles.push({ x: s.x + Math.cos(a) * 46 * (s.t / s.t0), y: s.y + Math.sin(a) * 46 * (s.t / s.t0), vx: -Math.cos(a) * 90, vy: -Math.sin(a) * 90, life: 0.4, maxLife: 0.4, size: 3, hue: s.hue, kind: 'spark', rot: 0, spin: 0, drag: 3 });
     }
     if (s.t <= 0) {
-      spawnEnemy(s.type, s.x, s.y);
+      releaseSpawner(s);
       G.spawners.splice(i, 1);
     }
   }
@@ -927,7 +995,7 @@ function update(raw) {
   G.shown = lerp(G.shown, G.score, 1 - Math.exp(-14 * raw));
 
   if (!G.dead) {
-    if (G.comboT > 0) { G.comboT -= raw; if (G.comboT <= 0 && G.combo > 0) G.combo = 0; }
+    if (G.comboT > 0) { G.comboT -= raw; if (G.comboT <= 0 && G.combo > 0) G.combo = 0; }   /* window is 2.3s: chains demand aggression */
   }
   updatePlayer(dt);
   updateBullets(dt);
