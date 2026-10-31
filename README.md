@@ -92,3 +92,20 @@ shooters. Packs buy screen pressure cheaply, because a single shockwave clears t
 The player's cannon was then raised ~2.6× (PULSE 125 ms → 50 ms, PRISM 90 ms → 34 ms, plus a
 260-bullet cap) so dense waves are survivable; shot blips, recoil and screen shake were all reduced
 per shot so a 20-shot-per-second cannon reads as a stream of light, not a buzz.
+
+## Container
+
+```bash
+docker build -t chroma-rush:latest .
+docker run --rm -p 127.0.0.1:8099:8080 chroma-rush:latest   # http://127.0.0.1:8099
+```
+
+`nginxinc/nginx-unprivileged:1.27-alpine`: 3 static files, listens on **8080** as UID 101
+(no root, no privileged port), ships `/healthz` for the container HEALTHCHECK and for
+cluster probes, gzips js/css/svg, and serves everything `no-store` — with no build step,
+a cached `game.js` is the only way to play yesterday's balance.
+
+Pushed to **Docker Hub** as `initialed85/chroma-rush:latest`. Not ghcr: the ghcr repos on
+this fleet are private and home-dev has no pull secret. Deployed as an Application in
+`home-ops/clusters/dev/applications/chroma-rush` (owned by the home-ops fleet repo, mirroring
+the `asteroids` game app), host **chroma-rush.dev.initialed85.cc**.
