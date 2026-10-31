@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#05030c">
+<title>CHROMA RUSH — neon arena survival</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="ui">
+
+  <section id="menu" class="panel show">
+    <h1 class="logo">CHROMA<span>RUSH</span></h1>
+    <p class="tag">neon arena survival · chain kills, charge the shockwave, melt the screen</p>
+    <div class="keys">
+      <div><b>WASD</b><span>move</span></div>
+      <div><b>MOUSE</b><span>aim</span></div>
+      <div><b>LMB</b><span>fire (hold)</span></div>
+      <div><b>SPACE</b><span>shockwave (50 charge)</span></div>
+      <div><b>SHIFT</b><span>dash · i-frames</span></div>
+      <div><b>P / M</b><span>pause · mute</span></div>
+      <div><b>TOUCH</b><span>drag to fly, auto-fire</span></div>
+      <div><b>2×TAP</b><span>shockwave</span></div>
+    </div>
+    <button id="btn-start" class="cta">PRESS START</button>
+    <p class="fine">combo = score · get hit and it halves · every 5th wave is a boss</p>
+  </section>
+
+  <section id="pause" class="panel">
+    <h2>PAUSED</h2>
+    <p>P resume · M mute · R restart</p>
+  </section>
+
+  <section id="over" class="panel">
+    <h2 class="dead">YOU SHATTERED</h2>
+    <div id="stats" class="stats"></div>
+    <button id="btn-restart" class="cta">RUN IT AGAIN <em>R</em></button>
+  </section>
+
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
