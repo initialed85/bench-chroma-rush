@@ -308,13 +308,13 @@ function startWave(n) {
   G.waveBanner = 2.1;
   G.waveLabel = n % 5 === 0 ? 'BOSS' : 'WAVE ' + n;
   G.hueT = (n * 41 + 200) % 360;
-  G.clearT = 2.0;
-  const budget = 5 + Math.floor(n * 2.7);
+  G.clearT = 1.4;
+  const budget = 6 + Math.floor(n * 3.4);
   G.queue.length = 0;
   for (let i = 0; i < budget; i++) G.queue.push(chooseType(n));
   if (n % 5 === 0) G.queue.push('boss');
-  G.spawnInterval = Math.max(0.22, 1.15 - n * 0.055);
-  G.spawnT = 0.7;
+  G.spawnInterval = Math.max(0.16, 0.85 - n * 0.045);
+  G.spawnT = 0.45;
   G.player.charge = Math.min(100, G.player.charge + 12);
   sfx.wave(n);
   setPadWave(n);
@@ -324,16 +324,17 @@ function waves(dt) {
   if (G.dead) return;
   if (G.queue.length) {
     G.spawnT -= dt;
-    if (G.spawnT <= 0 && G.spawners.length < 7) {
+    /* density ceiling keeps the arena readable and the particle budget honest */
+    if (G.spawnT <= 0 && G.spawners.length < 7 && G.enemies.length + G.spawners.length < 18) {
       addSpawner(G.queue.shift());
       G.spawnT = G.spawnInterval * rand(0.7, 1.35);
     }
-    G.clearT = 2.0;
+    G.clearT = 1.4;
   } else if (!G.enemies.length && !G.spawners.length) {
     G.clearT -= dt;
     if (G.clearT <= 0) startWave(G.wave + 1);
   } else {
-    G.clearT = 2.0;
+    G.clearT = 1.4;
   }
 }
 function edgePoint() {
@@ -1423,5 +1424,8 @@ function frame(now) {
   scheduleMusic();
 }
 requestAnimationFrame(frame);
-window.__CHROMA__ = { G, update, render, startGame, shockwave, dash, fire, spawnEnemy, startWave, damagePlayer, killEnemy, keys };
+window.__CHROMA__ = {
+  G, update, render, startGame, shockwave, dash, fire, spawnEnemy, startWave, damagePlayer, killEnemy, keys,
+  size: () => ({ w: W, h: H, dpr: DPR })
+};
 })();

@@ -66,11 +66,15 @@ api.startGame();
 if (G.score !== 0 || G.wave !== 1 || G.player.hp !== 100) die('restart did not reset state');
 for (let i = 0; i < 600; i++) stepChecked(1 / 60);
 
-/* touch: drag-to-fly, double-tap shockwave */
+/* touch: drag-to-fly, double-tap shockwave (fresh session, kept alive — a dead player must not cast) */
+api.startGame();
+G.player.fire = true;
+for (let i = 0; i < 120; i++) { G.player.hp = G.player.maxHp; stepChecked(1 / 60); }
+if (G.dead) die('player died during the touch warm-up');
 G.player.charge = 100;
 fire('pointerdown', P({ pointerType: 'touch', clientX: 300, clientY: 300 }));
 fire('pointermove', P({ pointerType: 'touch', clientX: 320, clientY: 320 }));
-for (let i = 0; i < 120; i++) stepChecked(1 / 60);
+for (let i = 0; i < 120; i++) { G.player.hp = G.player.maxHp; stepChecked(1 / 60); }
 if (!G.touch) die('touch drag not registered');
 const touched = G.player.x;
 fire('pointerdown', P({ pointerType: 'touch', clientX: 300, clientY: 300 }));

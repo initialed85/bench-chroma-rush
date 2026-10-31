@@ -46,6 +46,7 @@ game.js         engine: waves, enemies, particles, bloom, synth, beat  (~1.4k li
 tools/stub.mjs  headless DOM+canvas stub
 tools/smoke.mjs soak test: 12k frames, boss waves, death, restart, touch, pause, mute
 tools/probe.mjs difficulty probe (AFK vs bot)
+tools/play.mjs  played-time sim: bot drives real inputs, prints a play-by-play
 ```
 
 ## Engine notes (the "juice")
@@ -66,6 +67,19 @@ tools/probe.mjs difficulty probe (AFK vs bot)
 
 ```bash
 node --check game.js
-node tools/smoke.mjs     # soak + control surface; exits non-zero on any throw
-node tools/probe.mjs     # difficulty sanity: AFK dies ~wave 2, a crude bot reaches ~wave 10
+node tools/smoke.mjs      # soak + control surface; exits non-zero on any throw
+node tools/probe.mjs      # difficulty sanity: AFK dies fast, a crude bot climbs to ~wave 8
+node tools/play.mjs 60    # a minute of played time, printed as a play-by-play
+node tools/play.mjs 180   # three minutes, enough to reach and kill the wave-5 boss
 ```
+
+### Numbers from simulated play
+
+One minute: ~45-51 kills, wave 3-4, chain peaks x2.7-x4.7, ~9-12 enemies on screen at once.
+Three minutes: wave 7, boss down at 2:23, chain peak x9.58 (40 kills), 1,329 particles, PRISM weapon.
+AFK player dies in ~12 s — the arena does not tolerate idling.
+
+These runs found the pacing flaw that shaped the spawn economy: the first tuning pass produced
+only 5 concurrent enemies and chains under x2.4, which is a boring minute, so waves are now
+`6 + 3.4·wave` enemies spawning every ~0.8 s, with a hard density ceiling of 18 live units so the
+arena stays readable and the particle budget holds.
