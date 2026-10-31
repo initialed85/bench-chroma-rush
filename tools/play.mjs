@@ -13,7 +13,10 @@ api.startGame();
 const keys = api.keys;
 const p = () => G.player;
 
+const csv = process.argv.includes('--csv');
 let shockCasts = 0, dashes = 0, hitsTaken = 0, lowestHp = 100, partPeak = 0, enemyPeak = 0;
+let chain5T = null, chain10T = null, weaponT = null, kills30 = 0, parts30 = 0, enemyPeak30 = 0, shocks30 = 0, hits30 = 0;
+let enemySum = 0, busyFrames = 0, liveFrames = 0, bulletPeak = 0, ebPeak = 0, partSum = 0;
 let multPeak = 1, comboPeak = 0, heals = 0, guns = 0, slows = 0, gems = 0, walls = 0;
 let prevWave = G.wave, prevHp = 100, prevBoss = false, prevWeapon = 0, prevSlow = 0;
 let updateMs = 0, renderMs = 0, frames = 0, dead = false;
@@ -90,6 +93,16 @@ function watch() {
   if (G.slowT > prevSlow) { slows++; ev(`◷ TIME DILATION ${G.slowT.toFixed(1)}s`); }
   prevHp = pl.hp; prevWeapon = pl.weapon; prevSlow = G.slowT;
   lowestHp = Math.min(lowestHp, pl.hp);
+  if (G.combo >= 5 && chain5T === null) chain5T = simT;
+  if (G.combo >= 12 && chain10T === null) chain10T = simT;
+  if (pl.weapon > 0 && weaponT === null) weaponT = simT;
+  enemySum += G.enemies.length;
+  partSum += G.particles.length;
+  if (G.enemies.length + G.spawners.length > 0) liveFrames++;
+  if (G.enemies.length >= 6) busyFrames++;
+  bulletPeak = Math.max(bulletPeak, G.bullets.length);
+  ebPeak = Math.max(ebPeak, G.eBullets.length);
+  if (simT <= 30) { kills30 = G.kills; parts30 = Math.max(parts30, G.particles.length); enemyPeak30 = Math.max(enemyPeak30, G.enemies.length); shocks30 = shockCasts; hits30 = hitsTaken; }
   comboPeak = Math.max(comboPeak, G.combo);
   multPeak = Math.max(multPeak, 1 + Math.max(0, G.combo - 1) * 0.22);
   partPeak = Math.max(partPeak, G.particles.length);
@@ -111,6 +124,15 @@ for (let i = 0; i < total; i++) {
   if (G.overShown) break;
 }
 
+if (csv) {
+  const f = (v) => v === null ? '-' : v.toFixed(1);
+  console.log([`${(frames / 60).toFixed(0)}`, G.wave, G.kills, kills30, multPeak.toFixed(2), comboPeak,
+    f(chain5T), f(chain10T), f(weaponT), enemyPeak30, enemyPeak, parts30, partPeak,
+    shocks30, shockCasts, hits30, hitsTaken, Math.ceil(lowestHp), G.score,
+    (enemySum / frames).toFixed(2), (busyFrames / frames * 100).toFixed(0), bulletPeak, ebPeak,
+    (partSum / frames).toFixed(0), G.overShown ? 'dead' : 'alive'].join(','));
+  process.exit(0);
+}
 console.log(`\nCHROMA RUSH · ${(frames / 60).toFixed(0)}s of played time\n`);
 for (const l of log) console.log(l);
 console.log([
@@ -124,6 +146,8 @@ console.log([
   `hits taken       ${hitsTaken} (lowest hull ${Math.ceil(lowestHp)})`,
   `pickups          ${heals} hull · ${guns} weapon · ${slows} slow`,
   `peak enemies     ${enemyPeak} · peak particles ${partPeak}`,
+  `pressure        ${(enemySum / frames).toFixed(2)} enemies on screen on average · ${(busyFrames / frames * 100).toFixed(0)}% of the minute with 6+ alive`,
+  `bullets         ${bulletPeak} player / ${ebPeak} enemy peak on screen · ${(partSum / frames).toFixed(0)} particles on average`,
   `engine cost      ${(updateMs / frames).toFixed(3)} ms update · ${(renderMs / frames).toFixed(3)} ms draw-calls (headless, no GPU paint)`,
   `outcome          ${G.overShown ? 'shattered (panel shown)' : 'alive'}`
 ].join('\n'));
