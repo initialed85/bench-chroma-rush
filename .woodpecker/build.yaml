@@ -1,0 +1,42 @@
+# Build, tag and push the CHROMA RUSH image.
+#
+# Where the daemon is: `DOCKER_HOST` points at beefcake-ci-1's *own* dockerd, published over TCP by
+# home-ops (clusters/dev/applications/woodpecker/files/enable-docker-tcp.sh) and named by the
+# `docker-beefcake-ci-1` Service in the woodpecker namespace. The step is a pod in the cluster; the
+# build happens on the CI node, in /var/lib/docker, which survives between runs. That is the whole
+# reason for this arrangement: `docker build` here reuses the layers of every previous build, and
+# the nginx base image is pulled once per node, not once per pipeline. Pinning one node per repo
+# (instead of one Service that load-balances over all four) keeps that store warm.
+#
+# The deploy contract is unchanged: this pushes :latest and :<sha>, and home-ops deploys by pinning
+# an immutable digest in clusters/dev/applications/chroma-rush/deployment.yaml. The last step prints
+# the digest to paste there.
+steps:
+  - name: build-and-push
+    image: docker.io/library/docker:cli
+    environment:
+      DOCKER_HOST: tcp://docker-beefcake-ci-1:2375
+      IMAGE: docker.io/initialed85/chroma-rush
+    backend_options:
+      kubernetes:
+        secrets:
+          - name: dockerhub
+            key: username
+            target:
+              env: DOCKERHUB_USER
+          - name: dockerhub
+            key: token
+            target:
+              env: DOCKERHUB_TOKEN
+    commands:
+      - docker info --format 'daemon={{.Name}} root={{.DockerRootDir}} images_before={{.Images}}'
+      - echo "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USER" --password-stdin
+      - docker build -t "$IMAGE:$CI_COMMIT_SHA" -t "$IMAGE:latest" .
+      - docker push "$IMAGE:$CI_COMMIT_SHA"
+      - docker push "$IMAGE:latest"
+      - docker inspect --format 'digest={{.RepoDigests}}' "$IMAGE:latest"
+      - docker system df
+
+when:
+  branch: master
+  event: push
