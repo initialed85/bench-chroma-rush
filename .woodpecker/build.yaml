@@ -75,10 +75,18 @@ steps:
         TAG="$CI_COMMIT_SHA"
 
         mkdir -p "$HOME/.ssh"
-        printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/id_ed25519"
-        printf '%s\n' "$GITHUB_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-        chmod 700 "$HOME/.ssh"
-        chmod 600 "$HOME/.ssh/id_ed25519"
+        # OpenSSH resolves ~/.ssh with getpwuid(), not $HOME, so writing the key to $HOME/.ssh and
+        # expecting git's ssh to find it does not work: the step ran as uid 0, ssh read /root/.ssh,
+        # found nothing, and git died with "Host key verification failed" (pipeline #9, exit 128).
+        # Name the files explicitly instead of relying on any default path.
+        KEYFILE=/tmp/wp-deploy-key
+        KNOWNHOSTS=/tmp/wp-known_hosts
+        printf '%s\n' "$DEPLOY_KEY" > "$KEYFILE"
+        printf '%s\n' "$GITHUB_KNOWN_HOSTS" > "$KNOWNHOSTS"
+        chmod 600 "$KEYFILE"
+        chmod 644 "$KNOWNHOSTS"
+        GIT_SSH_COMMAND="ssh -i $KEYFILE -o UserKnownHostsFile=$KNOWNHOSTS -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+        export GIT_SSH_COMMAND
 
         git config --global --add safe.directory '*'
         git config --global user.name 'Woodpecker CI'
