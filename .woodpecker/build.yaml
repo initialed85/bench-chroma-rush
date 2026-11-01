@@ -64,6 +64,11 @@ steps:
         # POSIX sh: this image is alpine, and Woodpecker runs the script with the image's /bin/sh.
         set -eu
         export HOME=/tmp
+
+        # alpine/k8s ships git, kubectl and kustomize but NOT openssh-client, so the first git
+        # operation over ssh dies with "error: cannot run ssh: No such file or directory" (exit 128).
+        command -v ssh >/dev/null 2>&1 || apk add --no-cache openssh-client >/dev/null
+
         REPO=git@github.com:initialed85/home-ops.git
         MANIFEST=clusters/dev/applications/chroma-rush/kustomization.yaml
         DIR=clusters/dev/applications/chroma-rush
