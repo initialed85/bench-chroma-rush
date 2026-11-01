@@ -130,7 +130,9 @@ steps:
           ATTEMPT=$((ATTEMPT + 1))
         done
 
-        echo "gave up after 5 attempts to land $TAG on home-ops master" >&2
+        # Prefix the message FATAL: Woodpecker echoes the script body into the log before it runs,
+        # so a bare sentence here reads as output on a green run (it did: "it says it gave up").
+        echo "FATAL: exhausted $ATTEMPT push attempts to land $TAG on home-ops master" >&2
         exit 1
 
 when:
