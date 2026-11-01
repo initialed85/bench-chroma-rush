@@ -223,3 +223,19 @@ survives between runs. Pinning one repo to one node (`docker-beefcake-ci-1`, not
 spreads connections over all four CI nodes) keeps that store warm: the base image is pulled once per
 node, not once per pipeline, and this repo's layers are reused. Docker Hub credentials arrive as
 native Kubernetes secrets mapped to step env vars, from a Secret in the `woodpecker` namespace.
+
+### The deploy step: the pipeline commits the tag to home-ops
+
+`deploy-home-ops` (second step, `alpine/k8s` = git + kubectl + kustomize) clones `home-ops`, runs
+`kustomize edit set image docker.io/initialed85/chroma-rush=docker.io/initialed85/chroma-rush:$CI_COMMIT_SHA`
+on `clusters/dev/applications/chroma-rush/kustomization.yaml`, renders the tree with
+`kubectl kustomize` (a manifest that does not render is a failure, not a push), commits **that one
+file**, and pushes. Argo CD's auto-sync does the rollout. The credential is a GitHub deploy key
+with write access to `home-ops` and nothing else, exposed to the step as a native Kubernetes secret.
+
+Concurrency, because two pushes to `master` in a row mean two pipelines competing for one line of
+one file: each attempt clones current `master`, applies its own tag, and pushes. A rejected push
+means master moved after the clone, so it refetches and redoes the whole thing — five attempts,
+then the step fails rather than half-deploying. The operation is idempotent and order-independent,
+so the last writer wins and an intervening commit to a different app survives. The clone is full,
+not `--depth=1`: GitHub refuses pushes from shallow repositories.
