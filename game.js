@@ -660,6 +660,11 @@ function touchPlayer(e) {
 const COMBO_CAP = 24;const comboMult = () => 1 + Math.max(0, Math.min(G.combo, COMBO_CAP) - 1) * 0.22;
 const pan = (x) => clamp(x / W * 2 - 1, -1, 1);
 const addShake = (m) => { G.shake = Math.min(46, G.shake + m); };
+/* Screen shake is scaled at the ONE draw site that moves the camera, so this single knob retunes
+ * every source (17 addShake call sites: hits, deaths, shockwaves, boss phases, dashes). Measured
+ * with tools/shake.mjs: at 1 the camera jitter was p50 24 px / p90 40 px / peak 46 px, and 91% of
+ * frames carried some shake - a constant rattle that made aiming hard. 0.5 halves it. */
+const SHAKE_SCALE = 0.5;
 
 function damageEnemy(e, dmg, ang, fromX, fromY) {
   if (e.hp <= 0) return;
@@ -1355,7 +1360,7 @@ function render() {
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
   ctx.shadowBlur = 0;
-  if (G.shake > 0) ctx.translate(rand(-G.shake, G.shake), rand(-G.shake, G.shake));
+  if (G.shake > 0) { const sk = G.shake * SHAKE_SCALE; ctx.translate(rand(-sk, sk), rand(-sk, sk)); }
   drawBackground(t);
   ctx.globalCompositeOperation = 'lighter';
   drawSpawners();
