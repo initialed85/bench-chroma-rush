@@ -103,11 +103,7 @@ steps:
             exit 0
           fi
 
-          git commit --quiet -m "chroma-rush: image tag $TAG
-
-Woodpecker pipeline $CI_NUMBER built and pushed docker.io/initialed85/chroma-rush:$TAG
-from $CI_COMMIT_REF at $CI_COMMIT_BRANCH; this commit is the deploy.
-Co-authored-by: Woodpecker CI <woodpecker@initialed85.cc>" -- "$MANIFEST"
+          git commit --quiet -m "chroma-rush: image tag $TAG (Woodpecker #$CI_NUMBER)" -m "built and pushed docker.io/initialed85/chroma-rush:$TAG from $CI_COMMIT_SHA on $CI_COMMIT_BRANCH; this commit is the deploy" -- "$MANIFEST"
 
           if git push --quiet origin HEAD:master; then
             echo "home-ops master advanced to $(git rev-parse --short HEAD)"
