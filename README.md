@@ -203,3 +203,23 @@ Two facts that keep this honest:
 Hardening already in the manifest, for reference when changing the image: `runAsNonRoot: true`,
 `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`. `runAsNonRoot` is what makes
 kubelet refuse an image that quietly came back as root — keep it if the base image changes.
+
+## CI: `.woodpecker/build.yaml`
+
+One job, on push to `master`: build, tag `:latest` and `:$CI_COMMIT_SHA`, push both to Docker Hub,
+print the digest. It replaces the `docker build && docker push` you used to run by hand on a laptop;
+`home-ops` still deploys by pinning an immutable digest, so the release contract is untouched — the
+job produces the image, a digest bump deploys it.
+
+Where the daemon is, because it is not inside the job: the step sets
+`DOCKER_HOST=tcp://docker-beefcake-ci-1:2375`, which is that CI VM's own `dockerd`, published on its
+LAN address by `home-ops` (`clusters/dev/_deployed/deployed.yaml`, spec
+`expose-docker-api-for-woodpecker`) and named by a Service in the `woodpecker` namespace. Woodpecker
+runs steps as pods, and the Kubernetes backend it uses cannot mount `/var/run/docker.sock` into a
+pod — the daemon is reached over the network instead.
+
+Why that is the right shape: the build cache is the daemon's `/var/lib/docker` on the node, so it
+survives between runs. Pinning one repo to one node (`docker-beefcake-ci-1`, not a Service that
+spreads connections over all four CI nodes) keeps that store warm: the base image is pulled once per
+node, not once per pipeline, and this repo's layers are reused. Docker Hub credentials arrive as
+native Kubernetes secrets mapped to step env vars, from a Secret in the `woodpecker` namespace.
