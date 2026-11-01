@@ -1,19 +1,26 @@
-# Build, tag and push the CHROMA RUSH image.
+# Build, publish, and deploy CHROMA RUSH.
 #
-# Where the daemon is: `DOCKER_HOST` points at beefcake-ci-1's *own* dockerd, published over TCP by
-# home-ops (clusters/dev/applications/woodpecker/files/enable-docker-tcp.sh) and named by the
-# `docker-beefcake-ci-1` Service in the woodpecker namespace. The step is a pod in the cluster; the
-# build happens on the CI node, in /var/lib/docker, which survives between runs. That is the whole
-# reason for this arrangement: `docker build` here reuses the layers of every previous build, and
-# the nginx base image is pulled once per node, not once per pipeline. Pinning one node per repo
-# (instead of one Service that load-balances over all four) keeps that store warm.
+# Step 1 builds on beefcake-ci-1's *own* dockerd (`DOCKER_HOST=tcp://docker-beefcake-ci-1:2375`):
+# the daemon is published over TCP by the `expose-docker-api-for-woodpecker` spec in home-ops
+# `clusters/dev/_deployed/deployed.yaml`, and named by the `docker-beefcake-ci-1` Service in the
+# woodpecker namespace. A step is a pod, so it has no docker socket of its own; on the node the
+# image lands in the daemon's store, which is `/var/lib/containerd` on Docker 29, and that store is
+# the cache — the nginx base is pulled once per node and this repo's layers come back `CACHED`.
+# Pinning one node per repo (not a Service balancing over all four CI nodes) is what keeps it warm.
 #
-# The deploy contract is unchanged: this pushes :latest and :<sha>, and home-ops deploys by pinning
-# an immutable digest in clusters/dev/applications/chroma-rush/deployment.yaml. The last step prints
-# the digest to paste there.
+# Step 2 is the deploy: it clones home-ops, runs `kustomize edit set image` on
+# `clusters/dev/applications/chroma-rush/kustomization.yaml`, commits that one file, and pushes.
+# Argo CD's auto-sync then does the rollout. The tag is the commit sha, which is as immutable as a
+# digest: rollback is `git revert` of the commit this step makes.
+#
+# Credentials are native Kubernetes Secrets in the woodpecker namespace, mapped to env vars below
+# (`WOODPECKER_BACKEND_K8S_ALLOW_NATIVE_SECRETS=true` on the agent):
+#   - `dockerhub`            Docker Hub user + PAT, push target
+#   - `home-ops-deploy-key`  ed25519 GitHub deploy key, write, home-ops repo only
 steps:
   - name: build-and-push
     image: docker.io/library/docker:cli
+    privileged: true
     environment:
       DOCKER_HOST: tcp://docker-beefcake-ci-1:2375
       IMAGE: docker.io/initialed85/chroma-rush
@@ -34,8 +41,88 @@ steps:
       - docker build -t "$IMAGE:$CI_COMMIT_SHA" -t "$IMAGE:latest" .
       - docker push "$IMAGE:$CI_COMMIT_SHA"
       - docker push "$IMAGE:latest"
-      - docker inspect --format 'digest={{.RepoDigests}}' "$IMAGE:latest"
+      - docker inspect --format 'digest={{.RepoDigests}}' "$IMAGE:$CI_COMMIT_SHA"
       - docker system df
+
+  - name: deploy-home-ops
+    image: docker.io/alpine/k8s:1.31.4
+    depends_on:
+      - build-and-push
+    backend_options:
+      kubernetes:
+        secrets:
+          - name: home-ops-deploy-key
+            key: id_ed25519
+            target:
+              env: DEPLOY_KEY
+          - name: home-ops-deploy-key
+            key: known_hosts
+            target:
+              env: GITHUB_KNOWN_HOSTS
+    commands:
+      - |
+        # POSIX sh: this image is alpine, and Woodpecker runs the script with the image's /bin/sh.
+        set -eu
+        export HOME=/tmp
+        REPO=git@github.com:initialed85/home-ops.git
+        MANIFEST=clusters/dev/applications/chroma-rush/kustomization.yaml
+        DIR=clusters/dev/applications/chroma-rush
+        TAG="$CI_COMMIT_SHA"
+
+        mkdir -p "$HOME/.ssh"
+        printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/id_ed25519"
+        printf '%s\n' "$GITHUB_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+        chmod 700 "$HOME/.ssh"
+        chmod 600 "$HOME/.ssh/id_ed25519"
+
+        git config --global --add safe.directory '*'
+        git config --global user.name 'Woodpecker CI'
+        git config --global user.email 'woodpecker@initialed85.cc'
+
+        # The concurrency shape: two pushes to this repo in a row produce two pipelines, both
+        # wanting to be the last write to one line of one file. Cloning the *current* master on
+        # every attempt and re-applying this build's tag makes the operation idempotent and
+        # order-independent — whoever pushes last wins, and a commit that touched some other app
+        # in between is preserved because we build on top of it. `git push` rejects a
+        # non-fast-forward, so a rejection means exactly one thing: master moved after our clone.
+        # A full clone (not --depth=1): GitHub refuses to accept pushes from a shallow repo.
+        ATTEMPT=1
+        while [ "$ATTEMPT" -le 5 ]; do
+          rm -rf home-ops
+          git clone --quiet --single-branch --branch master "$REPO" home-ops
+          cd home-ops
+
+          (cd "$DIR" && kustomize edit set image "docker.io/initialed85/chroma-rush=docker.io/initialed85/chroma-rush:$TAG")
+
+          # Never push a tree that does not render: a broken manifest is discovered by Argo
+          # minutes later, in a namespace this pipeline has no business debugging at 3 a.m.
+          kubectl kustomize "$DIR" > /dev/null
+
+          if git diff --quiet -- "$MANIFEST"; then
+            echo "home-ops already points at $TAG; nothing to commit"
+            exit 0
+          fi
+
+          git commit --quiet -m "chroma-rush: image tag $TAG
+
+Woodpecker pipeline $CI_NUMBER built and pushed docker.io/initialed85/chroma-rush:$TAG
+from $CI_COMMIT_REF at $CI_COMMIT_BRANCH; this commit is the deploy.
+Co-authored-by: Woodpecker CI <woodpecker@initialed85.cc>" -- "$MANIFEST"
+
+          if git push --quiet origin HEAD:master; then
+            echo "home-ops master advanced to $(git rev-parse --short HEAD)"
+            echo "Argo CD will roll chroma-rush to $TAG"
+            exit 0
+          fi
+
+          cd ..
+          echo "attempt $ATTEMPT: master moved under us, refetching"
+          sleep $((ATTEMPT * 3))
+          ATTEMPT=$((ATTEMPT + 1))
+        done
+
+        echo "gave up after 5 attempts to land $TAG on home-ops master" >&2
+        exit 1
 
 when:
   branch: master
