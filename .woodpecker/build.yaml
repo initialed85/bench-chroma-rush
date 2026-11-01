@@ -8,13 +8,17 @@
 # the cache — the nginx base is pulled once per node and this repo's layers come back `CACHED`.
 # Pinning one node per repo (not a Service balancing over all four CI nodes) is what keeps it warm.
 #
-# Step 2 is the deploy: it clones home-ops, runs `kustomize edit set image` on
-# `clusters/dev/applications/chroma-rush/kustomization.yaml`, commits that one file, and pushes.
-# Argo CD's auto-sync then does the rollout. The tag is the commit sha, which is as immutable as a
-# digest: rollback is `git revert` of the commit this step makes.
+# Step 2 is the deploy, and it is a plugin: the script lives in home-ops at
+# `ci/woodpecker/plugins/kustomize-deploy/plugin.sh` (contract, traps and dry-run pod in the README next
+# to it) and is published as `initialed85/wp-kustomize-deploy` by home-ops' own pipeline. It clones
+# home-ops, runs `kustomize edit set image` on this app's kustomization, verifies the tree renders and
+# that the rendered tree actually references the tag, commits that one file, and pushes through a retry
+# loop. Argo CD's auto-sync then does the rollout. The tag is the commit sha, which is as immutable as a
+# digest: rollback is `git revert` of the commit the plugin makes.
 #
 # Credentials are native Kubernetes Secrets in the woodpecker namespace, mapped to env vars below
-# (`WOODPECKER_BACKEND_K8S_ALLOW_NATIVE_SECRETS=true` on the agent):
+# (`WOODPECKER_BACKEND_K8S_ALLOW_NATIVE_SECRETS=true` on the agent). A deploy key answers for one
+# repository, so a hijacked pipeline can write manifests to home-ops and nothing else:
 #   - `dockerhub`            Docker Hub user + PAT, push target
 #   - `home-ops-deploy-key`  ed25519 GitHub deploy key, write, home-ops repo only
 steps:
@@ -45,95 +49,30 @@ steps:
       - docker system df
 
   - name: deploy-home-ops
-    image: docker.io/alpine/k8s:1.31.4
+    # A step counts as a plugin when it has no `commands`, no `entrypoint` and no `environment`
+    # (pipeline/frontend/yaml/types/container.go:IsPlugin), which is why the configuration below is
+    # `settings:` only. `settings:` values are passed through verbatim: Woodpecker does not expand
+    # `$CI_COMMIT_SHA` there (compiler/settings/params.go), so the plugin derives the tag from the step
+    # environment itself — `image` is the name as home-ops spells it, and `dir` is what it edits.
+    # Pin `:latest` to follow home-ops master, or `:<sha>` for a frozen plugin (both are published).
+    image: docker.io/initialed85/wp-kustomize-deploy:latest
     depends_on:
       - build-and-push
+    settings:
+      image: docker.io/initialed85/chroma-rush
+      dir: clusters/dev/applications/chroma-rush
     backend_options:
       kubernetes:
         secrets:
+          # The env name IS the plugin setting (PLUGIN_<KEY>), so this mapping is the whole contract.
           - name: home-ops-deploy-key
             key: id_ed25519
             target:
-              env: DEPLOY_KEY
+              env: PLUGIN_DEPLOY_KEY
           - name: home-ops-deploy-key
             key: known_hosts
             target:
-              env: GITHUB_KNOWN_HOSTS
-    commands:
-      - |
-        # POSIX sh: this image is alpine, and Woodpecker runs the script with the image's /bin/sh.
-        set -eu
-        export HOME=/tmp
-
-        # alpine/k8s ships git, kubectl and kustomize but NOT openssh-client, so the first git
-        # operation over ssh dies with "error: cannot run ssh: No such file or directory" (exit 128).
-        command -v ssh >/dev/null 2>&1 || apk add --no-cache openssh-client >/dev/null
-
-        REPO=git@github.com:initialed85/home-ops.git
-        MANIFEST=clusters/dev/applications/chroma-rush/kustomization.yaml
-        DIR=clusters/dev/applications/chroma-rush
-        TAG="$CI_COMMIT_SHA"
-
-        mkdir -p "$HOME/.ssh"
-        # OpenSSH resolves ~/.ssh with getpwuid(), not $HOME, so writing the key to $HOME/.ssh and
-        # expecting git's ssh to find it does not work: the step ran as uid 0, ssh read /root/.ssh,
-        # found nothing, and git died with "Host key verification failed" (pipeline #9, exit 128).
-        # Name the files explicitly instead of relying on any default path.
-        KEYFILE=/tmp/wp-deploy-key
-        KNOWNHOSTS=/tmp/wp-known_hosts
-        printf '%s\n' "$DEPLOY_KEY" > "$KEYFILE"
-        printf '%s\n' "$GITHUB_KNOWN_HOSTS" > "$KNOWNHOSTS"
-        chmod 600 "$KEYFILE"
-        chmod 644 "$KNOWNHOSTS"
-        GIT_SSH_COMMAND="ssh -i $KEYFILE -o UserKnownHostsFile=$KNOWNHOSTS -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
-        export GIT_SSH_COMMAND
-
-        git config --global --add safe.directory '*'
-        git config --global user.name 'Woodpecker CI'
-        git config --global user.email 'woodpecker@initialed85.cc'
-
-        # The concurrency shape: two pushes to this repo in a row produce two pipelines, both
-        # wanting to be the last write to one line of one file. Cloning the *current* master on
-        # every attempt and re-applying this build's tag makes the operation idempotent and
-        # order-independent — whoever pushes last wins, and a commit that touched some other app
-        # in between is preserved because we build on top of it. `git push` rejects a
-        # non-fast-forward, so a rejection means exactly one thing: master moved after our clone.
-        # A full clone (not --depth=1): GitHub refuses to accept pushes from a shallow repo.
-        ATTEMPT=1
-        while [ "$ATTEMPT" -le 5 ]; do
-          rm -rf home-ops
-          git clone --quiet --single-branch --branch master "$REPO" home-ops
-          cd home-ops
-
-          (cd "$DIR" && kustomize edit set image "docker.io/initialed85/chroma-rush=docker.io/initialed85/chroma-rush:$TAG")
-
-          # Never push a tree that does not render: a broken manifest is discovered by Argo
-          # minutes later, in a namespace this pipeline has no business debugging at 3 a.m.
-          kubectl kustomize "$DIR" > /dev/null
-
-          if git diff --quiet -- "$MANIFEST"; then
-            echo "home-ops already points at $TAG; nothing to commit"
-            exit 0
-          fi
-
-          git commit --quiet -m "chroma-rush: image tag $TAG (Woodpecker ${CI_NUMBER:-?})" -m "built and pushed docker.io/initialed85/chroma-rush:$TAG from ${CI_COMMIT_SHA:-unknown} on ${CI_COMMIT_BRANCH:-?}; this commit is the deploy" -- "$MANIFEST"
-
-          if git push --quiet origin HEAD:master; then
-            echo "home-ops master advanced to $(git rev-parse --short HEAD)"
-            echo "Argo CD will roll chroma-rush to $TAG"
-            exit 0
-          fi
-
-          cd ..
-          echo "attempt $ATTEMPT: master moved under us, refetching"
-          sleep $((ATTEMPT * 3))
-          ATTEMPT=$((ATTEMPT + 1))
-        done
-
-        # Prefix the message FATAL: Woodpecker echoes the script body into the log before it runs,
-        # so a bare sentence here reads as output on a green run (it did: "it says it gave up").
-        echo "FATAL: exhausted $ATTEMPT push attempts to land $TAG on home-ops master" >&2
-        exit 1
+              env: PLUGIN_KNOWN_HOSTS
 
 when:
   branch: master
